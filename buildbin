@@ -1,0 +1,342 @@
+#!/bin/bash -i
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#
+# buildbin
+# A utility for building Arch Linux packages within a container
+#
+# Copyright 2023 D. Murphy
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+### Read in arguments and display help if applicable ###########################
+[[ $# -eq 0 ]] && help=1
+mounts+=( "/" )
+
+while [[ -n "$1" ]]; do
+  case "$1" in
+    -u|--user)         shift; chuser="$1"                                     ;;
+    -c|--copy)         copy=1                                                 ;;
+    -m|--makedir)      makedir=1                                              ;;
+    -d|--build)        shift; builddir="$1"                                   ;;
+       --no-erase)     noerase=1                                              ;;
+    -i|--install)      install=1; copy=1                                      ;;
+    -r|--repo)         shift; repo=1; repodb="$1"                             ;;
+    -b|--bind)         shift;
+                       [[ "$2" == /* ]] && extmnt[${#mounts[@]}]="$1" && shift
+                       mounts+=( "$1" )                                       ;;
+    -h|--help)         help=1                                                 ;;
+       --about)        about=1                                                ;;
+    -s|--src|--source) shift
+                       [[ "$2" == /* ]] && srcdir[0]="$1" && shift
+                       srcdir[1]="$1"                                         ;;
+    -t|--chroot)       shift; rootdir="$1"                                    ;;
+    -l|--launch)       true                                                   ;;
+       --force-reset)  freset=1                                               ;;
+    *)                 echo "invalid option $1"; exit 1                       ;;
+  esac
+  shift
+done
+
+if (($about)); then
+  echo "
+Buildbin is a script for building Arch Linux packages in a container without
+cluttering the base system installation with build dependencies. This script
+bind mounts the system or specified root directory as read only, upon which an
+overlay filesystem is created. A chroot container is launched on the overlay
+filesystem, within which dependencies can be installed and packages can be built
+without modification to the underlying base system. Upon exiting the container,
+packages can be automatically moved into the system cache, added to a local
+repository, or installed."
+  exit 0
+fi
+
+if (($help)); then
+  echo "
+A utility for building Arch Linux packages within a container
+
+Usage: buildbin [options]
+
+Options:
+  -h, --help              show this message and exit
+  -u, --user <name>       username to enter container as. defaults to \$SUDO_USER
+  -d, --build <path>      path to set up the container. defaults to ./
+  -s, --source <path(s)>  source directory to enter container and build packages
+                          in. if an existing folder is specified, changes within
+                          this directory will persist after exiting; otherwise a
+                          temporary directory will be created. if --chroot is
+                          called, an external source directory may be specified
+                          by providing two paths: first the external directory
+                          and second the mountpoint within the chroot
+  -m, --makedir           make build directory if it does not exist
+  -c, --copy              copy packages to the system pacman cache
+  -i, --install           install all packages that were built. implies --copy
+  -r, --repo <pathtodb>   add packages to a local repository
+  -b, --bind <path(s)>    absolute paths to bind mount in addition to /. may be
+                          called multiple times and mounts must be in order. if
+                          --chroot is called, an external mount may be specified
+                          by providing two paths: first the external directory
+                          and second the mountpoint within the chroot
+  -t, --chroot <path>     overlay the specified directory as root instead of /
+  -l, --launch            launch buildbin with default options. necessary only
+                          if no other options are specified
+  --no-erase              do not erase temporary container files on exit
+  --force-reset           reset the build directory by removing stale mounts and
+                          deleting temporary container files
+  --about                 show program description
+
+The author's favorite workflow utilizes a tmpfs build folder and a network
+mounted cache and local repository, with the following command:
+
+> sudo buildbin -d /tmp -c -r /mnt/pacman/cache/home.db.tar -b /mnt/pacman"
+  exit 0
+fi
+
+# User to enter the chroot as
+[[ -z $chuser ]] && chuser=$SUDO_USER
+[[ -z $chuser ]] && chuser=$DOAS_USER
+[[ -z $chuser ]] && chuser=root
+
+# Can't mount or create chroot if we're not root
+(($UID)) && echo "you must have root priveleges to continue." && exit 2
+
+# Add bash builtins
+enable -f /usr/lib/bash/sleep sleep
+enable -f /usr/lib/bash/dirname dirname
+enable -f /usr/lib/bash/basename basename
+
+### Set up program and test directories ########################################
+
+# Normalize paths and find user
+[[ -n $builddir ]]  && builddir="$(realpath "$builddir" 2>/dev/null)"
+[[ -n $repodb ]]    && repodb="$(  realpath "$repodb"   2>/dev/null)"
+[[ -n $rootdir ]]   && rootdir="$( realpath "$rootdir"/ 2>/dev/null)"
+[[ -z $builddir  ]] && builddir="$(pwd)"
+homedir="$(grep ^$chuser: "$rootdir/etc/passwd" 2>/dev/null | cut -d: -f6)"
+
+# Define overlay paths
+lowerdir="$builddir/lower"
+upperdir="$builddir/upper"
+workdir="$builddir/work"
+mergedir="$builddir/buildbin"
+
+# Test paths
+[[ -n $repodb ]]  && [[ ! -e "$repodb" ]]  && echo "local repository $repodb not found. exiting." && exit 3
+[[ -n $rootdir ]] && [[ ! -d "$rootdir" ]] && echo "chroot path $rootdir not found. exiting."     && exit 4
+[[ ! -e "$rootdir"/bin/bash ]] && echo "linux installation not present at $rootdir/. exiting."    && exit 5
+[[ -z $homedir ]] && echo "user $chuser not found. exiting."                                      && exit 6
+
+# Reset the build folder
+function resetbuild {
+  for i in $(tac /etc/mtab | cut -d' ' -f2 | grep ^"${builddir// /\\040}"/); do
+    umount "${i//\\040/ }" 2>/dev/null || err=1
+  done
+  (($err)) && echo "stale mounts remain within $builddir. check /etc/mtab." && exit 41
+
+  rm -rf "${upperdir}_"* "${workdir}_"* 2>/dev/null || err=2
+  rm -df "${lowerdir}_"* "$mergedir"    2>/dev/null || err=3
+  (($err)) && echo "files were not deleted. perhaps there are unexpected contents." && exit 42
+  exit 0
+}
+
+# Set up and check source directory
+if [[ -n ${srcdir[1]} ]]; then
+  [[ $chuser == root ]] && echo "option --source is not allowed when --user is root. exiting." && exit 7
+
+  # Organize $srcdir as [0] outside chroot and [1] inside
+  srcdir[1]="$(realpath "${srcdir[1]}")"
+  if  [[ -n ${srcdir[0]} ]]
+  then srcdir[0]="$(realpath "${srcdir[0]}")"
+  else srcdir[0]="$rootdir${srcdir[1]}"
+  fi
+
+  [[ ! -d "${srcdir[0]}" ]] && echo "source directory ${srcdir[0]} not found. exiting." && exit 8
+
+  # Disallow home directory as the source directory
+  [[ "$(dirname "${srcdir[0]}")" -ef /home ]] && echo "source directory cannot be a home directory. exiting." && exit 9
+
+  # Disallow source directory in system path
+  for i in /bin /boot /dev /etc /lib /lib64 /opt /proc /root /run /sbin /srv /sys /usr /var; do
+    [[ ${srcdir[0]} == $i* ]] && echo "source directory cannot be in a system directory. exiting." && exit 10
+  done
+
+  # Prevent recursive mount
+  [[ "$builddir" == "${srcdir[0]}"* ]] && echo "source directory cannot be below the build directory. exiting." && exit 11
+fi
+
+# Set up and check build directory
+if [[ -d "$builddir" ]]; then savedir=1
+  if (($freset)); then
+    resetbuild
+  elif [[ -n $(find "${lowerdir}_"* "${upperdir}_"* "${workdir}_"* "$mergedir" -mindepth 1 -print -quit 2>/dev/null; \
+               find "${lowerdir}_"* "${upperdir}_"* "${workdir}_"* "$mergedir" -maxdepth 0 ! -type d -print -quit 2>/dev/null) ]]
+  then echo "build directory not empty. check contents and consider option --force-reset to delete the offending files." && exit 12
+  fi
+elif [[ -e "$builddir" ]] || (($freset)); then
+  echo "invalid build directory $builddir. exiting." && exit 13
+elif (($makedir)); then
+  ! mkdir -m 755 -p "$builddir" && echo "failed to create build directory. exiting." && exit 14
+else echo "build directory doesn't exist. pass -m to create the directory." && exit 15
+fi
+
+# Organize mounts as $extmount[@] outside chroot and $mounts[@] inside
+for (( i=0; i<"${#mounts[@]}"; i++ )); do
+  mounts[$i]="$(realpath "${mounts[$i]}")"
+  if [[ -n ${extmnt[$i]} ]] && [[ $i -gt 0 ]]
+  then extmnt[$i]="$(realpath "${extmnt[$i]}")"
+  else extmnt[$i]="$rootdir${mounts[$i]}"
+  fi
+done
+
+### Create trap to clean up on exit ############################################
+function unmountfs {
+  mountpoint -q "$1" || return 0
+  for j in {1..11}; do
+    umount -R "$1" 2>/dev/null && return 0
+    if [[ $j -lt 6 ]]; then sleep 1
+    elif [[ $j -eq 11 ]]; then break
+    else echo "mount $1 is busy. close open files and wait..." && sleep 5
+    fi
+  done
+  echo "failed to unmount $1. try --force-reset or clean up manually." && exit 31
+}
+
+function closebin {
+  exitcode=$?
+
+  # Close overlay filesystem and bind mounts
+  unmountfs "$mergedir"
+  for (( i="${#mounts[@]}"-1; i>-1; i-- ))
+  do unmountfs "${lowerdir}_$i"
+  done
+
+  # Delete build directory if specified
+  if grep -e "${lowerdir}_" -e "${upperdir}_" -e "${workdir}_" -e "$mergedir" /etc/mtab >/dev/null; then
+    err=1
+  elif ! (($noerase)); then
+    rm -r "${upperdir}_"* "${workdir}_"* || err=2
+    rmdir "$mergedir" "${lowerdir}_"*    || err=3
+    ! (($savedir)) && rmdir "$builddir"
+  fi
+  (($err)) && echo "failed to tear down container. try --force-reset or clean up manually." && exit 32
+  exit $exitcode
+}
+
+trap closebin INT TERM EXIT
+
+### Time for the fun stuff #####################################################
+for (( i=0; i<"${#mounts[@]}"; i++ )); do
+
+  # Create sub-folders if they don't exist
+  perms=$(stat -c "-m %a -o %U -g %G" "${extmnt[$i]}")
+  [[ $i -eq 0 ]] && install $perms -d "$mergedir"
+  install $perms -d "${lowerdir}_$i" "${upperdir}_$i" "${workdir}_$i"
+
+  # Mount filesystems
+  if ! mountpoint -q "${lowerdir}_$i"
+  then mount --bind -v -o ro "${extmnt[$i]}" "${lowerdir}_$i"
+  fi
+
+  # Create the overlay filesystem
+  if ! mountpoint -q "$mergedir${mounts[$i]}"
+  then mount -v -t overlay overlay -o lowerdir="${lowerdir}_$i",upperdir="${upperdir}_$i",workdir="${workdir}_$i" "$mergedir${mounts[$i]}"
+  fi
+done
+
+# Let's verify $mergedir is set up
+[[ ! -e "$mergedir"/bin/bash ]] && echo "failed to create container. exiting." && exit 21
+
+# Mount source directory in the overlay filesystem. Generate temporary directory if not set
+if [[ -z ${srcdir[1]} ]]; then
+  for i in {1..50}; do
+    srcdir[1]="/src-$(tr -dc a-f0-9 < /dev/urandom | head -c 4)"
+    [[ ! -d "$mergedir${srcdir[1]}" ]] && mkdir -m 777 -p "$mergedir${srcdir[1]}" && break
+  done
+  [[ ! -d "$mergedir${srcdir[1]}" ]] && echo "failed to create source directory. exiting." && exit 22
+  ! (($copy)) && ! (($repo)) && echo "
+your work will not be saved outside the container with the current options. if
+this is not your intent, please exit and restart with the appropriate options."
+
+else
+  ! mount --bind -v -o rw "${srcdir[0]}" "$mergedir${srcdir[1]}" && echo "failed to mount source directory ${srcdir[0]}. exiting." && exit 23
+fi
+
+# Test home directory, and then hijack bash prompt to identify when in the container
+[[ ! -e "$mergedir$homedir" ]]  && echo "home directory for $chuser not found. exiting." && exit 24
+
+function initfile {
+  [[ $1 == root ]] && red=';91'
+  echo "### Generated by buildbin. Do not write below this line. ###"
+  echo "unset PROMPT_COMMAND"
+  echo 'PS1="\[\e[1'$red'm\]buildbin\[\e[0m\] \W: "'
+  echo 'PS2="> "'
+  [[ -n $2 ]] && echo cd "${srcdir[1]}"
+}
+
+echo "$(initfile $chuser x)"                       >> "$mergedir$homedir/.bashrc"
+[[ ! $chuser == root ]] && echo "$(initfile root)" >> "$mergedir/root/.bashrc"
+
+# Get start time and launch the container
+echo
+printf -v time '%(%s)T'
+mount --rbind /dev  "$mergedir/dev"
+mount --make-rslave "$mergedir/dev"
+mount --rbind /sys  "$mergedir/sys"
+mount --make-rslave "$mergedir/sys"
+unshare --kill-child --pid --mount-proc="$mergedir/proc" chroot "$mergedir" su $chuser
+sed -ni '/### Generated by buildbin. Do not write below this line. ###/q;p' "$mergedir$homedir/.bashrc"
+
+### After exiting chroot, organize packages if requested #######################
+
+# Copy built and downloaded packages to system cache
+if (($copy)); then
+  cachedir=$(sed '/^\s*'CacheDir'/!d;s/.*=\|#.*//g;s/^ *//g;q' /etc/pacman.conf)
+  if [[ -n $cachedir ]]
+  then cachedir="$(realpath "$cachedir")"
+  else cachedir='/var/cache/pacman/pkg'
+  fi
+  find "${srcdir[0]}" "${upperdir}_"* 2>/dev/null -newerct @$time -type f -name '*.pkg.tar*' -exec cp -uv {} "$cachedir"/ \;
+fi
+
+# Search source directory for packages with timestamp newer than the start time, and install and/or add to repository if requested
+if (($install)) || (($repo)); then
+  while IFS= read -r -d '' line; do
+    case "$line" in
+      *.sig) signatures+=( "$line" ) ;;
+      *) toinstall+=( "$line" ) ;;
+    esac
+  done < <(find "$mergedir${srcdir[1]}" 2>/dev/null -newerct @$time -type f -name '*.pkg.tar*' -print0)
+
+  if [[ -n ${toinstall[0]} ]]; then
+    if (($repo)); then
+      repodir="$(dirname "$repodb")"
+      if ! [[ "$repodir" -ef "$cachedir" ]] || ! (($copy))
+      then cp -uv "${toinstall[@]}" "${signatures[@]}" "$repodir"/
+      fi
+      for i in "${toinstall[@]}"
+      do torepo+=( "$repodir/$(basename "$i")" )
+      done
+      /usr/bin/repo-add "$repodb" "${torepo[@]}"
+    fi
+
+    (($install)) && /usr/bin/pacman -U "${toinstall[@]}"
+  fi
+fi
+exit 0
+
+### trap gets called here to clean up ##########################################
