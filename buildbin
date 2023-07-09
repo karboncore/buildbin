@@ -42,10 +42,10 @@ while [[ -n "$1" ]]; do
                        mounts+=( "$1" )                                       ;;
     -h|--help)         help=1                                                 ;;
        --about)        about=1                                                ;;
-    -s|--src|--source) shift
+    -s|--src|--source) shift; source=1
                        [[ "$2" == /* ]] && srcdir[0]="$1" && shift
                        srcdir[1]="$1"                                         ;;
-    -t|--chroot)       shift; rootdir="$1"                                    ;;
+    -t|--chroot)       shift; chroot=1; rootdir="$1"                          ;;
     -l|--launch)       true                                                   ;;
        --force-reset)  freset=1                                               ;;
     *)                 echo "invalid option $1"; exit 1                       ;;
@@ -122,8 +122,8 @@ enable -f /usr/lib/bash/sleep sleep
 
 # Normalize paths and find user
 [[ -n $builddir ]]  && builddir="$(realpath "$builddir" 2>/dev/null)"
-[[ -n $repodb ]]    && repodb="$(  realpath "$repodb"   2>/dev/null)"
-[[ -n $rootdir ]]   && rootdir="$( realpath "$rootdir"/ 2>/dev/null)"
+[[ -n $repodb ]]    && repodb="$(  realpath -m "$repodb"  2>/dev/null)"
+[[ -n $rootdir ]]   && rootdir="$( realpath -m "$rootdir" 2>/dev/null)"
 [[ -z $builddir  ]] && builddir="$(pwd)"
 homedir="$(grep ^$chuser: "$rootdir/etc/passwd" 2>/dev/null | cut -d: -f6)"
 
@@ -134,8 +134,8 @@ workdir="$builddir/work"
 mergedir="$builddir/buildbin"
 
 # Test paths
-[[ -n $repodb ]]  && [[ ! -e "$repodb" ]]  && echo "local repository $repodb not found. exiting." && exit 3
-[[ -n $rootdir ]] && [[ ! -d "$rootdir" ]] && echo "chroot path $rootdir not found. exiting."     && exit 4
+(($repo)) && [[ ! -f "$repodb" ]]  && echo "local repository ${repodb/${repodb}/${repodb} }not found. exiting." && exit 3
+(($chroot)) && [[ ! -d "$rootdir" ]] && echo "chroot path ${rootdir/${rootdir}/${rootdir} }not found. exiting." && exit 4
 [[ ! -e "$rootdir"/bin/bash ]] && echo "linux installation not present at $rootdir/. exiting."    && exit 5
 [[ -z $homedir ]] && echo "user $chuser not found. exiting."                                      && exit 6
 
@@ -153,17 +153,17 @@ function resetbuild {
 }
 
 # Set up and check source directory
-if [[ -n ${srcdir[1]} ]]; then
+if (($source)); then
   [[ $chuser == root ]] && echo "option --source is not allowed when --user is root. exiting." && exit 7
 
   # Organize $srcdir as [0] outside chroot and [1] inside
-  srcdir[1]="$(realpath "${srcdir[1]}")"
+  srcdir[1]="$(realpath -m "${srcdir[1]}" 2>/dev/null)"
   if  [[ -n ${srcdir[0]} ]]
-  then srcdir[0]="$(realpath "${srcdir[0]}")"
+  then srcdir[0]="$(realpath -m "${srcdir[0]}" 2>/dev/null)"
   else srcdir[0]="$rootdir${srcdir[1]}"
   fi
 
-  [[ ! -d "${srcdir[0]}" ]] && echo "source directory ${srcdir[0]} not found. exiting." && exit 8
+  [[ ! -d "${srcdir[0]}" ]] && echo "source directory ${srcdir[0]/${srcdir[0]}/${srcdir[0]} }not found. exiting." && exit 8
 
   # Disallow home directory as the source directory
   [[ "$(dirname "${srcdir[0]}")" -ef /home ]] && echo "source directory cannot be a home directory. exiting." && exit 9
@@ -194,11 +194,12 @@ fi
 
 # Organize mounts as $extmount[@] outside chroot and $mounts[@] inside
 for (( i=0; i<"${#mounts[@]}"; i++ )); do
-  mounts[$i]="$(realpath "${mounts[$i]}")"
+  mounts[$i]="$(realpath -m "${mounts[$i]}" 2>/dev/null)"
   if [[ -n ${extmnt[$i]} ]] && [[ $i -gt 0 ]]
-  then extmnt[$i]="$(realpath "${extmnt[$i]}")"
+  then extmnt[$i]="$(realpath -m "${extmnt[$i]}" 2>/dev/null)"
   else extmnt[$i]="$rootdir${mounts[$i]}"
   fi
+  [[ ! -d "${extmnt[$i]}" ]] && echo "mount path ${extmnt[$i]/${extmnt[$i]}/${extmnt[$i]} }not found. exiting." && exit 16
 done
 
 ### Create trap to clean up on exit ############################################
