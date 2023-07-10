@@ -332,7 +332,10 @@ if (($copy)); then
     prune=( '-path' "${upperdir}_0${srcdir[1]}" '-prune' '-o' )
   fi
   while IFS= read -r -d '' line; do
-    tocopy+=( "$line" )
+    case "$line" in
+      *.sig) copysigs+=( "$line" ) ;;
+      *)     tocopy+=( "$line" )   ;;
+    esac
   done < <(find "${upperdir}_"* 2>/dev/null "${prune[@]}" -newerct @$time -type f -name '*.pkg.tar*' -print0)
 fi
 
@@ -354,7 +357,7 @@ else
 fi
 
 if (($copy)); then
-  cp -uv "${tocopy[@]}" "${toinstall[@]}" "${signatures[@]}" "$cachedir"/
+  cp -uv "${tocopy[@]}" "${copysigs[@]}" "${toinstall[@]}" "${signatures[@]}" "$cachedir"/
 fi
 
 if [[ -n ${toinstall[0]} ]]; then
