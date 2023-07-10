@@ -315,11 +315,12 @@ echo "searching for packages..."
 
 # Determine cache and repo paths
 if (($copy)); then
-  cachedir=$(sed '/^\s*'CacheDir'/!d;s/.*=\|#.*//g;s/^ *//g;q' /etc/pacman.conf)
-  if [[ -n $cachedir ]]
-  then cachedir="$(realpath "$cachedir")"
-  else cachedir='/var/cache/pacman/pkg'
-  fi
+  for dir in $(/usr/bin/pacman -v 2>/dev/null | sed -n 's@^Cache Dirs: @@p'); do
+    if [[ -d "$dir" && -w "$dir" ]]; then
+      cachedir="${dir%/}" && break
+    fi
+  done
+  [[ -n $cachedir ]] || cachedir='/var/cache/pacman/pkg'
 fi
 
 if (($repo)); then
