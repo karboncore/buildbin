@@ -252,7 +252,9 @@ for (( i=0; i<"${#mounts[@]}"; i++ )); do
   fi
 
   # Create the overlay filesystem
-  if ! mountpoint -q "$mergedir${mounts[$i]}"
+  if [[ ! -d "$mergedir${mounts[$i]}" ]]; then
+    echo "mount destination ${mounts[$i]/${mounts[$i]}/$mergedir${mounts[$i]} }for ${extmnt[$i]} does not exist. skipping." && continue
+  elif ! mountpoint -q "$mergedir${mounts[$i]}"
   then mount -v -t overlay overlay -o lowerdir="${lowerdir}_$i",upperdir="${upperdir}_$i",workdir="${workdir}_$i" "$mergedir${mounts[$i]}"
   fi
 done
@@ -272,6 +274,9 @@ your work will not be saved outside the container with the current options. if
 this is not your intent, please exit and restart with the appropriate options."
 
 else
+  if [[ ! -d "$mergedir${srcdir[1]}" ]]; then
+    echo "source destination ${srcdir[1]/${srcdir[1]}/$mergedir${srcdir[1]} }for ${srcdir[0]} does not exist. exiting." && exit 25
+  fi
   ! mount --bind -v -o rw "${srcdir[0]}" "$mergedir${srcdir[1]}" && echo "failed to mount source directory ${srcdir[0]}. exiting." && exit 23
 fi
 
