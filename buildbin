@@ -323,20 +323,6 @@ fi
 echo
 echo "searching for packages..."
 
-# Determine cache and repo paths
-if ((copy)); then
-  for dir in $(/usr/bin/pacman -v 2>/dev/null | sed -n 's@^Cache Dirs: @@p'); do
-    if [[ -d "$dir" && -w "$dir" ]]; then
-      cachedir="${dir%/}" && break
-    fi
-  done
-  [[ -n $cachedir ]] || cachedir='/var/cache/pacman/pkg'
-fi
-
-if ((repo)); then
-  repodir="$(dirname "$repodb")"
-fi
-
 # Search the container for packages with timestamp newer than the start time
 if ((copy)); then
   if [[ -z ${srcdir[0]} ]]; then
@@ -358,7 +344,7 @@ while IFS= read -r -d '' line; do
   esac
 done < <(find "$mergedir${srcdir[1]}" 2>/dev/null -newerct @$time -type f -name '*.pkg.tar*' -print0)
 
-# Perform the relevant actions on the files
+# Print search summary
 if [[ -z "${tocopy[0]}" && -z "${toinstall[0]}" ]]; then
   echo "none found."
   exit 0
@@ -367,6 +353,21 @@ else
   echo
 fi
 
+# Determine cache and repo paths
+if ((copy)); then
+  for dir in $(/usr/bin/pacman -v 2>/dev/null | sed -n 's@^Cache Dirs: @@p'); do
+    if [[ -d "$dir" && -w "$dir" ]]; then
+      cachedir="${dir%/}" && break
+    fi
+  done
+  [[ -n $cachedir ]] || cachedir='/var/cache/pacman/pkg'
+fi
+
+if ((repo)); then
+  repodir="$(dirname "$repodb")"
+fi
+
+# Perform the relevant actions on the files
 if ((copy)); then
   cp -uv "${tocopy[@]}" "${copysigs[@]}" "${toinstall[@]}" "${signatures[@]}" "$cachedir"/
 fi
