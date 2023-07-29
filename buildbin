@@ -364,7 +364,18 @@ if ((copy)); then
 fi
 
 if ((repo)); then
-  repodir="$(dirname "$repodb")"
+  repodir="${repodb%/*}"
+fi
+
+# Remove stale signatures
+if ((copy)) || ((repo)); then
+  for (( i=0; i<${#toinstall[@]}; i++ )); do
+    if [[ "${signatures[@]}" != *"${toinstall[$i]}"* ]]; then
+      ((! copy)) || oldsigs+=( "${toinstall[$i]/*\//$cachedir/}.sig" )
+      ((! repo)) || oldsigs+=( "${toinstall[$i]/*\//$repodir/}.sig" )
+    fi
+  done
+  [[ -z ${oldsigs[0]} ]] || rm -fv "${oldsigs[@]}"
 fi
 
 # Perform the relevant actions on the files
