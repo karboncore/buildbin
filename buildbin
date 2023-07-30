@@ -26,30 +26,45 @@
 
 ### Read in arguments and display help if applicable ###########################
 [[ $# -gt 0 ]] || help=1
-mounts+=( "/" )
+mounts=( "/" )
+
+# Pass back a normalized file path as a variable
+function setpath {
+  local path newpath i
+  IFS='/' read -ra path <<< "$2"
+  [[ -z ${path[0]} ]] || newpath="$PWD"
+  for (( i=0; i<${#path[@]}; i++ )); do
+    case "${path[$i]}" in
+      ''|'.') true                           ;;
+      ..)     newpath="${newpath%/*}"        ;;
+      *)      newpath="$newpath/${path[$i]}" ;;
+    esac
+  done
+  printf -v $1 "/${newpath#\/}"
+}
 
 while [[ -n "$1" ]]; do
   case "$1" in
     -u|--user)         shift; chuser="$1"                                     ;;
     -c|--copy)         copy=1                                                 ;;
     -m|--makedir)      makedir=1                                              ;;
-    -d|--build)        shift; builddir="$1"                                   ;;
+    -d|--build)        shift; setpath builddir "$1"                           ;;
        --no-erase)     noerase=1                                              ;;
     -i|--install)      install=1; copy=1                                      ;;
-    -r|--repo)         shift; repo=1; repodb="$1"                             ;;
+    -r|--repo)         shift; repo=1; setpath repodb "$1"                     ;;
     -b|--bind)         shift;
-                       if [[ "$2" == /* ]]; then
-                         extmnt[${#mounts[@]}]="$1" && shift
+                       if [[ -n "$2" && "$2" != -* ]]; then
+                         setpath extmnt[${#mounts[@]}] "$1" && shift
                        fi
-                       mounts+=( "$1" )                                       ;;
+                       setpath mounts[${#mounts[@]}] "$1"                     ;;
     -h|--help)         help=1                                                 ;;
        --about)        about=1                                                ;;
     -s|--src|--source) shift; source=1
-                       if [[ "$2" == /* ]]; then
-                         srcdir[0]="$1" && shift
+                       if [[ -n "$2" && "$2" != -* ]]; then
+                         setpath srcdir[0] "$1" && shift
                        fi
-                       srcdir[1]="$1"                                         ;;
-    -t|--chroot)       shift; chroot=1; rootdir="$1"                          ;;
+                       setpath srcdir[1] "$1"                                 ;;
+    -t|--chroot)       shift; chroot=1; setpath rootdir "$1"                  ;;
     -l|--launch)       true                                                   ;;
        --force-reset)  freset=1                                               ;;
     *)                 echo "invalid option $1"; exit 1                       ;;
@@ -129,14 +144,11 @@ enable -f /usr/lib/bash/sleep sleep
 
 ### Set up program and test directories ########################################
 
-# Normalize paths and find user
-[[ -z $builddir ]] || builddir="$(realpath    "$builddir" 2>/dev/null)"
-[[ -z $repodb ]]   || repodb="$(  realpath -m "$repodb"   2>/dev/null)"
-[[ -z $rootdir ]]  || rootdir="$( realpath -m "$rootdir"  2>/dev/null)"
-[[ -n $builddir ]] || builddir="$(pwd)"
+# Find user
 homedir="$(grep ^$chuser: "$rootdir/etc/passwd" 2>/dev/null | cut -d: -f6)"
 
 # Define overlay paths
+[[ -n $builddir ]] || builddir="$PWD"
 lowerdir="$builddir/lower"
 upperdir="$builddir/upper"
 workdir="$builddir/work"
@@ -165,17 +177,14 @@ if ((source)); then
   [[ $chuser != root ]] || die 7 "option --source is not allowed when --user is root. exiting."
 
   # Organize $srcdir as [0] outside chroot and [1] inside
-  srcdir[1]="$(realpath -m "${srcdir[1]}" 2>/dev/null)"
-  if [[ -n ${srcdir[0]} ]]; then
-    srcdir[0]="$(realpath -m "${srcdir[0]}" 2>/dev/null)"
-  else
+  if [[ -z ${srcdir[0]} ]]; then
     srcdir[0]="$rootdir${srcdir[1]}"
   fi
 
   [[ -d "${srcdir[0]}" ]] || die 8 "source directory ${srcdir[0]/${srcdir[0]}/${srcdir[0]} }not found. exiting."
 
   # Disallow home directory as the source directory
-  [[ ! "$(dirname "${srcdir[0]}")" -ef /home ]] || die 9 "source directory cannot be a home directory. exiting."
+  [[ ! "${srcdir[0]%/*}" -ef /home ]] || die 9 "source directory cannot be a home directory. exiting."
 
   # Disallow source directory in system path
   for i in /bin /boot /dev /etc /lib /lib64 /opt /proc /root /run /sbin /srv /sys /usr /var; do
@@ -199,15 +208,12 @@ elif [[ -e "$builddir" ]] || ((freset)); then
 elif ((makedir)); then
   mkdir -m 755 -p "$builddir" || die 14 "failed to create build directory. exiting."
 else
-  die 15 "build directory doesn't exist. pass -m to create the directory."
+  die 15 "build directory ${builddir/${builddir}/${builddir} }does not exist. pass -m to create the directory."
 fi
 
 # Organize mounts as $extmount[@] outside chroot and $mounts[@] inside
-for (( i=0; i<"${#mounts[@]}"; i++ )); do
-  mounts[$i]="$(realpath -m "${mounts[$i]}" 2>/dev/null)"
-  if [[ -n ${extmnt[$i]} && $i -gt 0 ]]; then
-    extmnt[$i]="$(realpath -m "${extmnt[$i]}" 2>/dev/null)"
-  else
+for (( i=0; i<${#mounts[@]}; i++ )); do
+  if [[ -z ${extmnt[$i]} ]]; then
     extmnt[$i]="$rootdir${mounts[$i]}"
   fi
   [[ -d "${extmnt[$i]}" ]] || die 16 "mount path ${extmnt[$i]/${extmnt[$i]}/${extmnt[$i]} }not found. exiting."
@@ -275,10 +281,10 @@ done
 # Mount source directory in the overlay filesystem. Generate temporary directory if not set
 if [[ -z ${srcdir[1]} ]]; then
   for i in {1..50}; do
-    srcdir[1]="/src-$(tr -dc a-f0-9 < /dev/urandom | head -c 4)"
-    [[ ! -d "$mergedir${srcdir[1]}" ]] && mkdir -m 777 -p "$mergedir${srcdir[1]}" && break
+    printf -v srcdir[1] "/src-%04x" $((2*$RANDOM+$RANDOM%2))
+    [[ ! -d "$mergedir${srcdir[1]}" ]] && break
   done
-  [[ -d "$mergedir${srcdir[1]}" ]] || die 22 "failed to create source directory. exiting."
+  mkdir -m 777 "$mergedir${srcdir[1]}" 2>/dev/null || die 22 "failed to create source directory. exiting."
   if ((! copy)) && ((! repo)); then echo "
 your work will not be saved outside the container with the current options. if
 this is not your intent, please exit and restart with the appropriate options."
