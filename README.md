@@ -37,6 +37,9 @@ A utility for building Arch Linux packages within a container
       --force-reset           reset the build directory by removing stale mounts and
                               deleting temporary container files
       --about                 show program description
+      --                      enter the container, execute a command, and exit if
+                              the return status is zero. any arguments after --
+                              will be passed directly to bash and executed as --user
 
     The author's favorite workflow utilizes a tmpfs build folder and a network
     mounted cache and local repository, with the following command:

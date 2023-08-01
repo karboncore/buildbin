@@ -67,6 +67,7 @@ while [[ -n "$1" ]]; do
     -t|--chroot)       shift; chroot=1; setpath rootdir "$1"                  ;;
     -l|--launch)       true                                                   ;;
        --force-reset)  freset=1                                               ;;
+       --)             shift; commands=( "$@" ); break                        ;;
     *)                 echo "invalid option $1"; exit 1                       ;;
   esac
   shift
@@ -118,6 +119,9 @@ Options:
   --force-reset           reset the build directory by removing stale mounts and
                           deleting temporary container files
   --about                 show program description
+  --                      enter the container, execute a command, and exit if
+                          the return status is zero. any arguments after --
+                          will be passed directly to bash and executed as --user
 
 The author's favorite workflow utilizes a tmpfs build folder and a network
 mounted cache and local repository, with the following command:
@@ -305,11 +309,25 @@ function initfile {
   echo "unset PROMPT_COMMAND"
   echo 'PS1="\[\e[1'$red'm\]buildbin\[\e[0m\] \W: "'
   echo 'PS2="> "'
-  [[ -z $2 ]] || echo cd "${srcdir[1]}"
+  if [[ $1 == $chuser ]]; then
+    echo "cd '${srcdir[1]}'"
+    if [[ -n ${commands[0]} ]]; then
+      commands=( "${commands[@]/#/\"}" )
+      commands=( "${commands[@]/%/\"}" )
+      echo 'function exec_rtn() {'
+      echo '  unset exec_rtn'
+      echo '  if [[ $$ -eq 2 ]]; then'
+      echo "    ${commands[@]} && exit 0"
+      echo '    return $?'
+      echo '  fi'
+      echo '}'
+      echo 'exec_rtn'
+    fi
+  fi
 }
 
-echo "$(initfile $chuser x)"                     >> "$mergedir$homedir/.bashrc"
-[[ $chuser == root ]] || echo "$(initfile root)" >> "$mergedir/root/.bashrc"
+initfile $chuser >> "$mergedir$homedir/.bashrc"
+[[ $chuser == root ]] || initfile root >> "$mergedir/root/.bashrc"
 
 # Get start time and launch the container
 echo
