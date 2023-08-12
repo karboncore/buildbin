@@ -166,7 +166,7 @@ mergedir="$builddir/buildbin"
 
 # Reset the build folder
 function resetbuild {
-  for i in $(tac /etc/mtab | cut -d' ' -f2 | grep ^"${builddir// /\\040}"/); do
+  for i in $(tac /proc/mounts | cut -d' ' -f2 | grep -e ^"${mergedir// /\\040}" -e ^"${lowerdir// /\\040}_"); do
     umount "${i//\\040/ }" 2>/dev/null || err=1
   done
   ((! err)) || die 41 "stale mounts remain within $builddir. check /etc/mtab."
@@ -247,9 +247,7 @@ function closebin {
   done
 
   # Delete build directory if specified
-  if grep -e "${lowerdir}_" -e "${upperdir}_" -e "${workdir}_" -e "$mergedir" /etc/mtab >/dev/null; then
-    err=1
-  elif ((! noerase)); then
+  if ((! noerase)); then
     rm -r "${upperdir}_"* "${workdir}_"* 2>/dev/null || err=2
     rmdir "$mergedir" "${lowerdir}_"*    2>/dev/null || err=3
     ((savedir)) || rmdir "$builddir"
