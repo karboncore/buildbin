@@ -324,8 +324,14 @@ function initfile {
   fi
 }
 
-initfile $chuser >> "$mergedir$homedir/.bashrc"
-[[ $chuser == root ]] || initfile root >> "$mergedir/root/.bashrc"
+if [[ $chuser != root ]]; then
+  if [[ ! -e "$mergedir$homedir/.bashrc" ]]; then
+    true >> "$mergedir$homedir/.bashrc"
+    chown --reference "$mergedir$homedir" "$mergedir$homedir/.bashrc"
+  fi
+  initfile $chuser >> "$mergedir$homedir/.bashrc"
+fi
+initfile root >> "$mergedir/root/.bashrc"
 
 # Get start time and launch the container
 echo
