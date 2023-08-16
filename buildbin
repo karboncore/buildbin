@@ -308,19 +308,14 @@ function initfile {
   echo 'PS1="\[\e[1'$red'm\]buildbin\[\e[0m\] \W: "'
   echo 'PS2="> "'
   if [[ $1 == $chuser ]]; then
-    echo "cd '${srcdir[1]}'"
+    echo 'if [[ $$ -eq 2 ]]; then'
+    echo "  cd '${srcdir[1]}'"
     if [[ -n ${commands[0]} ]]; then
       commands=( "${commands[@]/#/\"}" )
       commands=( "${commands[@]/%/\"}" )
-      echo 'function exec_rtn() {'
-      echo '  unset exec_rtn'
-      echo '  if [[ $$ -eq 2 ]]; then'
-      echo "    ${commands[@]} && exit 0"
-      echo '    return $?'
-      echo '  fi'
-      echo '}'
-      echo 'exec_rtn'
+      echo "  ${commands[@]} && exit 0"
     fi
+    echo 'fi'
   fi
 }
 
