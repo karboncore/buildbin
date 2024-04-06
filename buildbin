@@ -30,6 +30,10 @@ mounts=( "/" )
 
 # Pass back a normalized file path as a variable
 function setpath {
+  if [[ -z $2 ]]; then
+    unset $1
+    return 1
+  fi
   local path newpath i
   IFS='/' read -ra path <<< "$2"
   [[ -z ${path[0]} ]] || newpath="$PWD"
