@@ -312,7 +312,7 @@ function initfile {
   echo 'PS1="\[\e[1'$red'm\]buildbin\[\e[0m\] \W: "'
   echo 'PS2="> "'
   if [[ $1 == $chuser ]]; then
-    echo 'if [[ $$ -eq 2 ]]; then'
+    echo 'if [[ $$ -le 3 ]]; then'
     echo "  cd '${srcdir[1]}'"
     if [[ -n ${commands[0]} ]]; then
       commands=( "${commands[@]/#/\"}" )
