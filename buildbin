@@ -55,7 +55,7 @@ while [[ -n "$1" ]]; do
     -d|--build)        shift; setpath builddir "$1"                           ;;
        --no-erase)     noerase=1                                              ;;
     -i|--install)      install=1; copy=1                                      ;;
-    -r|--repo)         shift; repo=1; setpath repodb "$1"                     ;;
+    -r|--repo)         shift; repo=1; repodb="$1"                             ;;
     -b|--bind)         shift;
                        if [[ -n "$2" && "$2" != -* ]]; then
                          setpath extmnt[${#mounts[@]}] "$1" && shift
@@ -110,7 +110,8 @@ Options:
   -m, --makedir           make build directory if it does not exist
   -c, --copy              copy packages to the system pacman cache
   -i, --install           install all packages that were built. implies --copy
-  -r, --repo <pathtodb>   add packages to a local repository
+  -r, --repo <database>   add packages to a local repository. specify by path or
+                          by name
   -b, --bind <path(s)>    absolute paths to bind mount in addition to /. may be
                           called multiple times and mounts must be in order. if
                           --chroot is called, an external mount may be specified
@@ -162,8 +163,37 @@ upperdir="$builddir/upper"
 workdir="$builddir/work"
 mergedir="$builddir/buildbin"
 
+# Determine cache directory
+if ((copy)) || ((repo)); then
+  for dir in $(/usr/bin/pacman -v 2>/dev/null | sed -n 's@^Cache Dirs: @@p'); do
+    if [[ -d "$dir" && -w "$dir" ]]; then
+      setpath cachedir "$dir" && break
+    fi
+  done
+  [[ -n $cachedir ]] || cachedir='/var/cache/pacman/pkg'
+fi
+
+# Determine repo path
+if ((repo)); then
+  if [[ -n ${repoerr:="$repodb"} ]]; then
+    if [[ "$repodb" =~ (.+\.db$|.+\.db\.tar.*|.*/.*) ]]; then
+      repodb="$(realpath -qm "$repodb")"
+      repoerr="$repodb"
+    elif [[ -f "$cachedir/$repodb.db" ]]; then
+      repodb="$(realpath -qm "$cachedir/$repodb.db")"
+    elif setpath repodir "$(grep -P "^\Q[${repodb}]\E" -A30 /etc/pacman.conf | sed -n '1d;/^\[/q;/^Server *= *file/{s/.*file\:\/\///p}')"; then
+      repodb="$(realpath -qm "$repodir/$repodb.db")"
+    fi
+  fi
+
+  if [[ "$repodb" =~ ^/.+\.db\.tar.* && -f "$repodb" ]]; then
+    setpath repodir "/${repodb%/*}"
+  else
+    die 3 "local repository ${repoerr/${repoerr}/${repoerr} }not found or invalid. exiting."
+  fi
+fi
+
 # Test paths
-[[ -z $repo   || -f "$repodb"  ]] || die 3 "local repository ${repodb/${repodb}/${repodb} }not found. exiting."
 [[ -z $chroot || -d "$rootdir" ]] || die 4 "chroot path ${rootdir/${rootdir}/${rootdir} }not found. exiting."
 [[ -x "$rootdir"/bin/bash ]]      || die 5 "linux installation not present at $rootdir/. exiting."
 [[ -n $homedir ]]                 || die 6 "user $chuser not found. exiting."
@@ -378,20 +408,6 @@ if [[ -z "${tocopy[0]}" && -z "${toinstall[0]}" ]]; then
 else
   echo "$((${#tocopy[@]}+${#toinstall[@]})) found."
   echo
-fi
-
-# Determine cache and repo paths
-if ((copy)); then
-  for dir in $(/usr/bin/pacman -v 2>/dev/null | sed -n 's@^Cache Dirs: @@p'); do
-    if [[ -d "$dir" && -w "$dir" ]]; then
-      cachedir="${dir%/}" && break
-    fi
-  done
-  [[ -n $cachedir ]] || cachedir='/var/cache/pacman/pkg'
-fi
-
-if ((repo)); then
-  repodir="${repodb%/*}"
 fi
 
 # Remove stale signatures

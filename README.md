@@ -24,7 +24,8 @@ A utility for building Arch Linux packages within a container
       -m, --makedir           make build directory if it does not exist
       -c, --copy              copy packages to the system pacman cache
       -i, --install           install all packages that were built. implies --copy
-      -r, --repo <pathtodb>   add packages to a local repository
+      -r, --repo <database>   add packages to a local repository. specify by path or
+                              by name
       -b, --bind <path(s)>    absolute paths to bind mount in addition to /. may be
                               called multiple times and mounts must be in order. if
                               --chroot is called, an external mount may be specified
