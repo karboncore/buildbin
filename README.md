@@ -23,6 +23,7 @@ A utility for building Arch Linux packages within a container
                               and second the mountpoint within the chroot
       -m, --makedir           make build directory if it does not exist
       -c, --copy              copy packages to the system pacman cache
+      -p, --copy-src          copy source packages to the specified directory
       -i, --install           install all packages that were built. implies --copy
       -r, --repo <database>   add packages to a local repository. specify by path or
                               by name
