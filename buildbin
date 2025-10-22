@@ -365,6 +365,11 @@ if [[ $chuser != root ]]; then
 fi
 initfile root >> "$mergedir/root/.bashrc"
 
+# Get system resolv.conf if using chroot
+if ((chroot)); then
+  cp --target-directory="$mergedir/etc" /etc/resolv.conf
+fi
+
 # Get start time and launch the container
 echo
 printf -v time '%(%s)T'
