@@ -188,6 +188,10 @@ if ((repo)); then
     fi
   fi
 
+  if [[ "$repodb" =~ /.+\.db$ && -f "$repodb" ]]; then
+    repodb="$(find "${repodb%/*}" -name "${repodb##*/}.tar"* -samefile "$repodb" -print -quit)"
+  fi
+
   if [[ "$repodb" =~ ^/.+\.db\.tar.* && -f "$repodb" ]]; then
     setpath repodir "/${repodb%/*}"
   else
